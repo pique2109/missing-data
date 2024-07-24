@@ -1,265 +1,367 @@
 import streamlit as st
-import numpy as np
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import train_test_split, cross_val_score, RandomizedSearchCV
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from keras.models import Sequential
-from keras.layers import Dense, Dropout
-from keras.optimizers import Adam
-from keras.callbacks import EarlyStopping
-from xgboost import XGBRegressor
-from sklearn.ensemble import RandomForestRegressor
-import io
-import base64
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.impute import SimpleImputer
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.wrappers.scikit_learn import KerasRegressor
+from scipy import stats
 import openpyxl
-from lxml import etree
+from openpyxl.styles import PatternFill
+import io
 
-# Konstanta untuk nilai khusus pengganti NaN
-SPECIAL_VALUE = 9999
+# Fungsi untuk memvalidasi format data
+def validate_data(df):
+    required_columns = ['Nama Lokasi', 'Curah Hujan', 'Suhu Udara', 'Kelembaban Udara', 'Tekanan', 'Elevasi', 'Koordinat']
+    if not all(col in df.columns for col in required_columns):
+        return False
+    return True
 
-def replace_nan_with_special_value(df, special_value=SPECIAL_VALUE):
-    """Mengganti nilai NaN dengan nilai khusus dan mengidentifikasi data kosong."""
-    df_replaced = df.copy()
-    nan_mask = df.isna()
-    df_replaced = df_replaced.fillna(special_value)
+# Fungsi untuk preprocessing data
+def preprocess_data(data):
+    # Mengubah NaN menjadi 8888
+    data = data.fillna(8888)
     
-    # Menambahkan kolom baru untuk mengidentifikasi data kosong
-    for col in df.columns:
-        df_replaced[f"{col}_is_missing"] = nan_mask[col].astype(int)
+    # Identifikasi kolom-kolom numerik
+    numeric_columns = ['Curah Hujan', 'Suhu Udara', 'Kelembaban Udara', 'Tekanan', 'Elevasi']
     
-    return df_replaced
+    # Normalisasi data numerik
+    scaler = MinMaxScaler()
+    data[numeric_columns] = scaler.fit_transform(data[numeric_columns])
+    
+    return data, scaler
 
-@st.cache_data
-def load_and_prepare_data(data):
-    # Ganti NaN dengan nilai khusus
-    data_replaced = replace_nan_with_special_value(data)
-    
-    features = ['lat', 'lon', 'elevation', 'temperature', 'humidity', 'pressure']
-    # Tambahkan kolom indikator data kosong ke features
-    missing_indicators = [f"{col}_is_missing" for col in features]
-    features += missing_indicators
-    
-    X = data_replaced[features]
-    y = data_replaced['rainfall']
-    
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-    return X_scaled, y, scaler
-
-@st.cache_resource
-def create_and_train_ann_model(X_train, y_train, X_val, y_val):
+# Fungsi untuk membuat model ANN
+def create_model(input_shape):
     model = Sequential([
-        Dense(64, activation='relu', input_shape=(X_train.shape[1],)),
+        Dense(64, activation='relu', input_shape=(input_shape,)),
         Dropout(0.2),
         Dense(32, activation='relu'),
         Dropout(0.2),
         Dense(16, activation='relu'),
         Dense(1)
     ])
-    model.compile(optimizer=Adam(learning_rate=0.001), loss='mean_squared_error')
-    early_stopping = EarlyStopping(patience=10, restore_best_weights=True)
-    history = model.fit(X_train, y_train, validation_data=(X_val, y_val),
-                        epochs=100, batch_size=32, callbacks=[early_stopping], verbose=0)
-    return model, history
-
-@st.cache_resource
-def train_xgboost_model(X_train, y_train):
-    model = XGBRegressor(n_estimators=100, learning_rate=0.1, max_depth=5)
-    model.fit(X_train, y_train)
+    model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
     return model
 
-@st.cache_resource
-def train_random_forest_model(X_train, y_train):
-    model = RandomForestRegressor(n_estimators=100, max_depth=10)
-    model.fit(X_train, y_train)
-    return model
-
-def evaluate_model(y_true, y_pred, model_name):
-    mse = mean_squared_error(y_true, y_pred)
-    mae = mean_absolute_error(y_true, y_pred)
-    r2 = r2_score(y_true, y_pred)
-    return f"{model_name} - MSE: {mse:.4f}, MAE: {mae:.4f}, R2: {r2:.4f}"
-
-def create_visualizations(data, y_true, y_pred):
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(20, 5))
+# Fungsi untuk evaluasi model
+def evaluate_model(model, X, y):
+    # Cross-validation
+    cv_scores = cross_val_score(model, X, y, cv=5, scoring='neg_mean_squared_error')
+    cv_rmse = np.sqrt(-cv_scores)
     
-    ax1.scatter(y_true, y_pred)
-    ax1.plot([y_true.min(), y_true.max()], [y_true.min(), y_true.max()], 'r--', lw=2)
-    ax1.set_xlabel('Actual Rainfall')
-    ax1.set_ylabel('Predicted Rainfall')
-    ax1.set_title('Actual vs Predicted Rainfall')
+    # Prediksi
+    y_pred = model.predict(X)
     
-    residuals = y_true - y_pred
-    ax2.hist(residuals, bins=30)
-    ax2.set_xlabel('Residuals')
-    ax2.set_ylabel('Frequency')
-    ax2.set_title('Histogram of Residuals')
+    # Metrik evaluasi
+    mse = mean_squared_error(y, y_pred)
+    mae = mean_absolute_error(y, y_pred)
+    r2 = r2_score(y, y_pred)
     
-    corr = data[['lat', 'lon', 'elevation', 'temperature', 'humidity', 'pressure', 'rainfall']].corr()
-    sns.heatmap(corr, annot=True, cmap='coolwarm', ax=ax3)
-    ax3.set_title('Feature Correlation Heatmap')
+    return {
+        'RMSE': np.sqrt(mse),
+        'MAE': mae,
+        'R2': r2,
+        'CV_RMSE_mean': cv_rmse.mean(),
+        'CV_RMSE_std': cv_rmse.std()
+    }
+
+# Fungsi untuk mengukur kontribusi model
+def measure_model_contributions(X_train, y_train, ann_pred, rf_pred, gb_pred):
+    X_meta = np.column_stack((ann_pred, rf_pred, gb_pred))
+    meta_model = GradientBoostingRegressor(n_estimators=100, random_state=42)
+    meta_model.fit(X_meta, y_train)
+    importances = meta_model.feature_importances_
+    return {
+        'ANN': importances[0],
+        'Random Forest': importances[1],
+        'Gradient Boosting': importances[2]
+    }
+
+# Fungsi untuk memeriksa konsistensi distribusi
+def check_distribution_consistency(original_data, imputed_data):
+    fig, ax = plt.subplots()
+    stats.probplot(original_data, dist="norm", plot=ax)
+    ax.get_lines()[0].set_markerfacecolor('blue')
+    ax.get_lines()[0].set_markeredgecolor('blue')
+    stats.probplot(imputed_data, dist="norm", plot=ax)
+    ax.get_lines()[2].set_markerfacecolor('red')
+    ax.get_lines()[2].set_markeredgecolor('red')
+    ax.legend(['Original Data', 'Imputed Data'])
+    ax.set_title('Q-Q Plot: Original vs Imputed Data')
     
-    return fig
+    ks_statistic, p_value = stats.ks_2samp(original_data, imputed_data)
+    
+    return fig, ks_statistic, p_value
 
-def create_template_data():
-    """Membuat data template."""
-    return pd.DataFrame({
-        'date': pd.date_range(start='2024-01-01', periods=10),
-        'lat': np.random.uniform(0, 10, 10),
-        'lon': np.random.uniform(100, 110, 10),
-        'elevation': np.random.uniform(0, 1000, 10),
-        'temperature': np.random.uniform(20, 35, 10),
-        'humidity': np.random.uniform(60, 90, 10),
-        'pressure': np.random.uniform(1000, 1020, 10),
-        'rainfall': np.random.uniform(0, 100, 10)
-    })
+# Fungsi untuk multiple imputation
+def multiple_imputation(model, X_missing, n_imputations=5):
+    imputations = []
+    for _ in range(n_imputations):
+        imputed_values = model.predict(X_missing)
+        imputations.append(imputed_values)
+    return np.array(imputations)
 
-def get_csv_download_link(df, filename="template_data.csv"):
-    """Menghasilkan link unduhan untuk file CSV."""
-    csv = df.to_csv(index=False)
-    b64 = base64.b64encode(csv.encode()).decode()
-    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">Download CSV Template</a>'
-    return href
+# Fungsi untuk validasi hasil imputasi
+def validate_imputation(imputed_values, column_name):
+    if column_name == 'Curah Hujan':
+        invalid_values = imputed_values[imputed_values < 0]
+        if len(invalid_values) > 0:
+            st.warning(f"Terdapat {len(invalid_values)} nilai curah hujan yang negatif setelah imputasi.")
+    # Tambahkan validasi lain sesuai kebutuhan
 
-def get_excel_download_link(df, filename="template_data.xlsx"):
-    """Menghasilkan link unduhan untuk file Excel."""
+# Fungsi untuk hyperparameter tuning
+def tune_hyperparameters(X_train, y_train):
+    # ANN
+    def create_model(neurons=64, dropout_rate=0.2, learning_rate=0.001):
+        model = Sequential([
+            Dense(neurons, activation='relu', input_shape=(X_train.shape[1],)),
+            Dropout(dropout_rate),
+            Dense(neurons//2, activation='relu'),
+            Dropout(dropout_rate),
+            Dense(1)
+        ])
+        model.compile(optimizer=Adam(learning_rate=learning_rate), loss='mse')
+        return model
+
+    ann_model = KerasRegressor(build_fn=create_model, epochs=100, batch_size=32, verbose=0)
+    ann_param_grid = {
+        'neurons': [32, 64, 128],
+        'dropout_rate': [0.1, 0.2, 0.3],
+        'learning_rate': [0.001, 0.01, 0.1]
+    }
+    ann_random = RandomizedSearchCV(estimator=ann_model, param_distributions=ann_param_grid, n_iter=10, cv=3, random_state=42)
+    ann_random.fit(X_train, y_train)
+
+    # Random Forest
+    rf_param_grid = {
+        'n_estimators': [100, 200, 300],
+        'max_depth': [10, 20, 30, None],
+        'min_samples_split': [2, 5, 10],
+        'min_samples_leaf': [1, 2, 4]
+    }
+    rf_random = RandomizedSearchCV(estimator=RandomForestRegressor(random_state=42), param_distributions=rf_param_grid, n_iter=10, cv=3, random_state=42)
+    rf_random.fit(X_train, y_train)
+
+    return ann_random.best_estimator_, rf_random.best_estimator_
+
+# Fungsi utama untuk training dan imputasi
+def train_and_impute(data, target_column, scaler):
+    X = data.drop(columns=[target_column, 'Nama Lokasi', 'Koordinat'])
+    y = data[target_column]
+    
+    X_complete = X[y != 8888]
+    y_complete = y[y != 8888]
+    X_missing = X[y == 8888]
+    
+    X_train, X_test, y_train, y_test = train_test_split(X_complete, y_complete, test_size=0.2, random_state=42)
+    
+    # Hyperparameter tuning
+    ann_model, rf_model = tune_hyperparameters(X_train, y_train)
+    
+    # Train models
+    ann_model.fit(X_train, y_train)
+    rf_model.fit(X_train, y_train)
+    gb_model = GradientBoostingRegressor(n_estimators=100, random_state=42)
+    gb_model.fit(X_train, y_train)
+    
+    # Predictions
+    ann_train_pred = ann_model.predict(X_train)
+    rf_train_pred = rf_model.predict(X_train)
+    gb_train_pred = gb_model.predict(X_train)
+    
+    ann_test_pred = ann_model.predict(X_test)
+    rf_test_pred = rf_model.predict(X_test)
+    gb_test_pred = gb_model.predict(X_test)
+    
+    # Model contributions
+    model_contributions = measure_model_contributions(X_train, y_train, ann_train_pred, rf_train_pred, gb_train_pred)
+    
+    # Combine predictions
+    final_train_pred = (ann_train_pred + rf_train_pred + gb_train_pred) / 3
+    final_test_pred = (ann_test_pred + rf_test_pred + gb_test_pred) / 3
+    
+    # Evaluate models
+    ann_metrics = evaluate_model(ann_model, X_test, y_test)
+    rf_metrics = evaluate_model(rf_model, X_test, y_test)
+    gb_metrics = evaluate_model(gb_model, X_test, y_test)
+    final_metrics = evaluate_model(lambda X: (ann_model.predict(X) + rf_model.predict(X) + gb_model.predict(X)) / 3, X_test, y_test)
+    
+    # Multiple imputation
+    ann_imputations = multiple_imputation(ann_model, X_missing)
+    rf_imputations = multiple_imputation(rf_model, X_missing)
+    gb_imputations = multiple_imputation(gb_model, X_missing)
+    
+    final_imputations = (ann_imputations + rf_imputations + gb_imputations) / 3
+    y_imputed = final_imputations.mean(axis=0)
+    imputation_std = final_imputations.std(axis=0)
+    
+    # Inverse transform imputed values
+    y_imputed_original_scale = scaler.inverse_transform(np.column_stack((y_imputed, X_missing)))[:, 0]
+    
+    # Validate imputation
+    validate_imputation(y_imputed_original_scale, target_column)
+    
+    return y_imputed_original_scale, imputation_std, final_metrics, model_contributions, ann_metrics, rf_metrics, gb_metrics, final_train_pred, y_train, final_test_pred, y_test
+
+# Fungsi untuk menyimpan hasil ke Excel
+def save_to_excel(data, imputed_values, imputation_std, target_column):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False)
-    excel_data = output.getvalue()
-    b64 = base64.b64encode(excel_data).decode()
-    href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="{filename}">Download Excel Template</a>'
-    return href
-
-def get_xml_download_link(df, filename="template_data.xml"):
-    """Menghasilkan link unduhan untuk file XML."""
-    root = etree.Element("data")
-    for _, row in df.iterrows():
-        record = etree.SubElement(root, "record")
-        for column, value in row.items():
-            field = etree.SubElement(record, column)
-            field.text = str(value)
+        data.to_excel(writer, index=False, sheet_name='Sheet1')
+        workbook = writer.book
+        worksheet = writer.sheets['Sheet1']
+        
+        fill_imputed = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+        fill_original = PatternFill(start_color="00FF00", end_color="00FF00", fill_type="solid")
+        
+        for i, row in data.iterrows():
+            cell = worksheet.cell(row=i+2, column=data.columns.get_loc(target_column)+1)
+            if row[target_column] == 8888:
+                cell.value = imputed_values[data[data[target_column] == 8888].index.get_loc(i)]
+                cell.fill = fill_imputed
+                # Add imputation standard deviation
+                std_cell = worksheet.cell(row=i+2, column=data.columns.get_loc(target_column)+2)
+                std_cell.value = imputation_std[data[data[target_column] == 8888].index.get_loc(i)]
+            else:
+                cell.fill = fill_original
     
-    xml_data = etree.tostring(root, pretty_print=True, encoding='unicode')
-    b64 = base64.b64encode(xml_data.encode('utf-8')).decode()
-    href = f'<a href="data:application/xml;base64,{b64}" download="{filename}">Download XML Template</a>'
-    return href
+    output.seek(0)
+    return output
 
-def predict_rainfall(model, scaler, lat, lon, elevation, temperature, humidity, pressure):
-    features = np.array([[lat, lon, elevation, temperature, humidity, pressure]])
-    # Tambahkan indikator data kosong (semua 0 karena ini adalah input manual)
-    features = np.hstack([features, np.zeros((1, 6))])
-    features_scaled = scaler.transform(features)
-    return model.predict(features_scaled)[0]
-
+# Fungsi utama Streamlit
 def main():
-    st.set_page_config(page_title="Rainfall Estimation Dashboard", layout="wide")
+    st.set_page_config(page_title="Dashboard Imputasi Data Curah Hujan", layout="wide")
     
-    st.title("Rainfall Estimation Dashboard")
+    st.title("Dashboard Imputasi Data Curah Hujan")
     
-    # Tambahkan pilihan untuk mengunduh template
-    st.subheader("Download Template")
-    template_df = create_template_data()
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown(get_csv_download_link(template_df), unsafe_allow_html=True)
-    with col2:
-        st.markdown(get_excel_download_link(template_df), unsafe_allow_html=True)
-    with col3:
-        st.markdown(get_xml_download_link(template_df), unsafe_allow_html=True)
-    
-    st.write("Click one of the links above to download a template with sample data.")
-    
-    uploaded_file = st.file_uploader("Choose a CSV, Excel, or XML file", type=['csv', 'xlsx', 'xml'])
+    uploaded_file = st.sidebar.file_uploader("Unggah file Excel", type="xlsx")
     
     if uploaded_file is not None:
-        try:
-            if uploaded_file.name.endswith('.csv'):
-                data = pd.read_csv(uploaded_file)
-            elif uploaded_file.name.endswith('.xlsx'):
-                data = pd.read_excel(uploaded_file)
-            elif uploaded_file.name.endswith('.xml'):
-                tree = etree.parse(uploaded_file)
-                root = tree.getroot()
-                data = []
-                for record in root.findall('record'):
-                    row = {child.tag: child.text for child in record}
-                    data.append(row)
-                data = pd.DataFrame(data)
-                data['date'] = pd.to_datetime(data['date'])
-                for col in ['lat', 'lon', 'elevation', 'temperature', 'humidity', 'pressure', 'rainfall']:
-                    data[col] = pd.to_numeric(data[col], errors='coerce')  # 'coerce' akan mengubah nilai non-numerik menjadi NaN
-            
-            st.success("File uploaded successfully!")
-            
-            st.subheader("Raw Data")
-            st.write(data.head())
-            
-            # Tampilkan informasi tentang data kosong
-            st.subheader("Missing Data Information")
-            missing_data = data.isnull().sum()
-            st.write(missing_data)
-            
-            X, y, scaler = load_and_prepare_data(data)
-            
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-            X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size=0.2, random_state=42)
-            
-            with st.spinner("Training models... This may take a few minutes."):
-                ann_model, history = create_and_train_ann_model(X_train, y_train, X_val, y_val)
-                xgb_model = train_xgboost_model(X_train, y_train)
-                rf_model = train_random_forest_model(X_train, y_train)
-            
-            y_pred_ann = ann_model.predict(X_test).flatten()
-            y_pred_xgb = xgb_model.predict(X_test)
-            y_pred_rf = rf_model.predict(X_test)
-            y_pred_ensemble = (y_pred_ann + y_pred_xgb + y_pred_rf) / 3
-            
-            residuals = y_test - y_pred_ensemble
-            residual_model = train_xgboost_model(X_test, residuals)
-            y_pred_final = y_pred_ensemble + residual_model.predict(X_test)
-            
-            st.subheader("Model Evaluation")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(evaluate_model(y_test, y_pred_ann, "ANN"))
-                st.write(evaluate_model(y_test, y_pred_xgb, "XGBoost"))
-            with col2:
-                st.write(evaluate_model(y_test, y_pred_rf, "Random Forest"))
-                st.write(evaluate_model(y_test, y_pred_ensemble, "Ensemble"))
-            st.write(evaluate_model(y_test, y_pred_final, "Final Model (with residual correction)"))
-            
-            st.subheader("Visualizations")
-            fig = create_visualizations(data, y_test, y_pred_final)
-            st.pyplot(fig)
-            
-            st.subheader("Predict Missing Rainfall")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                lat = st.number_input("Latitude", value=5.6)
-                lon = st.number_input("Longitude", value=105.2)
-            with col2:
-                elevation = st.number_input("Elevation", value=50)
-                temperature = st.number_input("Temperature", value=28)
-            with col3:
-                humidity = st.number_input("Humidity", value=80)
-                pressure = st.number_input("Pressure", value=1010)
-            
-            if st.button("Predict"):
-                final_pred = predict_rainfall(ann_model, scaler, lat, lon, elevation, temperature, humidity, pressure)
-                st.success(f"Predicted rainfall: {final_pred:.2f} mm")
-        
-        except Exception as e:
-            st.error(f"An error occurred: {str(e)}")
-            if "Label contains NaN" in str(e):
-                st.warning("The uploaded data contains NaN or infinity values in the rainfall column. Please check your data and ensure all rainfall values are valid numbers.")
-    
+        data = pd.read_excel(uploaded_file)
+        if not validate_data(data):
+            st.error("Format data tidak sesuai. Pastikan file Excel memiliki kolom: Nama Lokasi, Curah Hujan, Suhu Udara, Kelembaban Udara, Tekanan, Elevasi, Koordinat")
+            return
     else:
-        st.info("Please upload a CSV, Excel, or XML file to begin.")
+        st.warning("Silakan unggah file Excel dengan data curah hujan")
+        return
+    
+    target_column = st.sidebar.selectbox("Pilih kolom target untuk imputasi", ['Curah Hujan', 'Suhu Udara', 'Kelembaban Udara', 'Tekanan'])
+    
+    data_processed, scaler = preprocess_data(data)
+    
+    if st.button("Lakukan Imputasi"):
+        with st.spinner("Sedang melakukan imputasi..."):
+            imputed_values, imputation_std, final_metrics, model_contributions, ann_metrics, rf_metrics, gb_metrics, final_train_pred, y_train, final_test_pred, y_test = train_and_impute(data_processed, target_column, scaler)
+        
+        st.success("Imputasi selesai!")
+        
+        # Tampilkan metrik
+        st.subheader("Metrik Evaluasi")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("RMSE", f"{final_metrics['RMSE']:.4f}")
+        col2.metric("MAE", f"{final_metrics['MAE']:.4f}")
+        col3.metric("R2", f"{final_metrics['R2']:.4f}")
+        
+        # Perbandingan model
+        st.subheader("Perbandingan Model")
+        comparison_df = pd.DataFrame({
+            'ANN': ann_metrics,
+            'Random Forest': rf_metrics,
+            'Gradient Boosting': gb_metrics,
+            'Ensemble': final_metrics
+        }).T
+        st.dataframe(comparison_df)
+        
+        # Model contributions
+        st.subheader("Kontribusi Model")
+        st.write(model_contributions)
+        
+       # Visualisasi: scatter plot prediksi vs aktual
+        st.subheader("Prediksi vs Aktual")
+        fig, ax = plt.subplots()
+        ax.scatter(y_test, final_test_pred, alpha=0.5)
+        ax.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], 'r--', lw=2)
+        ax.set_xlabel("Nilai Aktual")
+        ax.set_ylabel("Nilai Prediksi")
+        ax.set_title("Scatter Plot: Prediksi vs Aktual")
+        st.pyplot(fig)
+
+        # Visualisasi: box plot perbandingan distribusi sebelum dan sesudah imputasi
+        st.subheader("Distribusi Sebelum dan Sesudah Imputasi")
+        fig, ax = plt.subplots()
+        data_before = data[data[target_column] != 8888][target_column]
+        data_after = data.copy()
+        data_after.loc[data_after[target_column] == 8888, target_column] = imputed_values
+        sns.boxplot(data=[data_before, data_after[target_column]], ax=ax)
+        ax.set_xticklabels(['Sebelum Imputasi', 'Setelah Imputasi'])
+        ax.set_title(f"Distribusi {target_column}")
+        st.pyplot(fig)
+
+        # Cek konsistensi distribusi
+        original_data = data[data[target_column] != 8888][target_column]
+        fig, ks_statistic, p_value = check_distribution_consistency(original_data, imputed_values)
+        st.subheader("Konsistensi Distribusi")
+        st.pyplot(fig)
+        st.write(f"Kolmogorov-Smirnov statistic: {ks_statistic:.4f}")
+        st.write(f"p-value: {p_value:.4f}")
+
+        # Tampilkan data gabungan
+        st.subheader("Data Gabungan (Asli + Imputasi)")
+        data_combined = data.copy()
+        data_combined.loc[data_combined[target_column] == 8888, target_column] = imputed_values
+        st.dataframe(data_combined)
+
+        # Analisis sensitivitas
+        st.subheader("Analisis Sensitivitas")
+        original_mean = data[data[target_column] != 8888][target_column].mean()
+        imputed_mean = data_combined[target_column].mean()
+        st.write(f"Mean sebelum imputasi: {original_mean:.2f}")
+        st.write(f"Mean setelah imputasi: {imputed_mean:.2f}")
+        st.write(f"Perubahan mean: {(imputed_mean - original_mean) / original_mean * 100:.2f}%")
+
+        # Tampilkan ketidakpastian imputasi
+        st.subheader("Ketidakpastian Imputasi")
+        st.write(f"Rata-rata standar deviasi imputasi: {imputation_std.mean():.4f}")
+        
+        # Visualisasi ketidakpastian imputasi
+        fig, ax = plt.subplots()
+        ax.hist(imputation_std, bins=20)
+        ax.set_xlabel("Standar Deviasi")
+        ax.set_ylabel("Frekuensi")
+        ax.set_title("Distribusi Ketidakpastian Imputasi")
+        st.pyplot(fig)
+
+        # Simpan hasil ke Excel
+        output = save_to_excel(data_combined, imputed_values, imputation_std, target_column)
+        st.download_button(
+            label="Unduh Hasil Imputasi",
+            data=output,
+            file_name="hasil_imputasi.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    # Tampilkan peta lokasi
+    st.subheader("Peta Lokasi")
+    if 'Koordinat' in data.columns:
+        koordinat = data['Koordinat'].str.split(',', expand=True).astype(float)
+        data['Latitude'] = koordinat[0]
+        data['Longitude'] = koordinat[1]
+        st.map(data)
+    else:
+        st.warning("Data koordinat tidak tersedia")
+
+    # Tampilkan data asli
+    st.subheader("Data Asli")
+    st.dataframe(data)
 
 if __name__ == "__main__":
     main()
