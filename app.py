@@ -1,3 +1,6 @@
+import os
+os.environ['STREAMLIT_SERVER_MAX_UPLOAD_SIZE'] = '200'  # Batasi ukuran upload menjadi 200 MB
+
 import streamlit as st
 import numpy as np
 import pandas as pd
