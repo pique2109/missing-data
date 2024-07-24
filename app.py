@@ -1,4 +1,16 @@
 import streamlit as st
+import subprocess
+import sys
+
+# Install required packages
+def install(package):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
+packages_to_install = ['pandas', 'numpy', 'scikit-learn', 'tensorflow', 'matplotlib', 'seaborn', 'xlsxwriter', 'openpyxl', 'keras-tuner']
+
+for package in packages_to_install:
+    install(package)
+    
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
