@@ -6,16 +6,15 @@ import seaborn as sns
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Dropout
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import EarlyStopping
+from keras.models import Sequential
+from keras.layers import Dense, Dropout
+from keras.optimizers import Adam
+from keras.callbacks import EarlyStopping
 from xgboost import XGBRegressor
 from sklearn.ensemble import RandomForestRegressor
 import io
 import openpyxl
 
-# Konfigurasi untuk mengurangi penggunaan memori
 @st.cache_data(max_entries=10)
 def load_and_prepare_data(data):
     features = ['lat', 'lon', 'elevation', 'temperature', 'humidity', 'pressure']
@@ -43,13 +42,13 @@ def create_and_train_ann_model(X_train, y_train, X_val, y_val):
 
 @st.cache_resource(max_entries=3)
 def train_xgboost_model(X_train, y_train):
-    model = XGBRegressor(n_estimators=100, learning_rate=0.1, max_depth=5, random_state=42)
+    model = XGBRegressor(n_estimators=100, learning_rate=0.1, max_depth=5)
     model.fit(X_train, y_train)
     return model
 
 @st.cache_resource(max_entries=3)
 def train_random_forest_model(X_train, y_train):
-    model = RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42)
+    model = RandomForestRegressor(n_estimators=100, max_depth=10)
     model.fit(X_train, y_train)
     return model
 
