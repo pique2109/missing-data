@@ -1,9 +1,8 @@
-
 import streamlit as st
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
+import plotly.graph_objects as go
+import plotly.express as px
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
@@ -19,15 +18,13 @@ import openpyxl
 # Fungsi untuk memuat dan mempersiapkan data
 @st.cache_data
 def load_and_prepare_data(data):
-    # Memisahkan fitur dan target
     features = ['lat', 'lon', 'elevation', 'temperature', 'humidity', 'pressure']
     X = data[features]
     y = data['rainfall']
-
-    # Normalisasi fitur
+    
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
-
+    
     return X_scaled, y, scaler
 
 # Fungsi untuk membuat model ANN
@@ -75,76 +72,63 @@ def evaluate_model(y_true, y_pred, model_name):
 
 # Fungsi untuk membuat visualisasi
 def create_visualizations(data, y_true, y_pred):
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(20, 5))
-
     # Scatter plot: Actual vs Predicted
-    ax1.scatter(y_true, y_pred)
-    ax1.plot([y_true.min(), y_true.max()], [y_true.min(), y_true.max()], 'r--', lw=2)
-    ax1.set_xlabel('Actual Rainfall')
-    ax1.set_ylabel('Predicted Rainfall')
-    ax1.set_title('Actual vs Predicted Rainfall')
+    fig_scatter = px.scatter(x=y_true, y=y_pred, labels={'x': 'Actual Rainfall', 'y': 'Predicted Rainfall'})
+    fig_scatter.add_trace(go.Scatter(x=[y_true.min(), y_true.max()], y=[y_true.min(), y_true.max()],
+                                     mode='lines', name='Perfect Prediction', line=dict(color='red', dash='dash')))
+    fig_scatter.update_layout(title='Actual vs Predicted Rainfall')
 
     # Histogram of residuals
     residuals = y_true - y_pred
-    ax2.hist(residuals, bins=30)
-    ax2.set_xlabel('Residuals')
-    ax2.set_ylabel('Frequency')
-    ax2.set_title('Histogram of Residuals')
+    fig_hist = px.histogram(residuals, nbins=30, labels={'value': 'Residuals'})
+    fig_hist.update_layout(title='Histogram of Residuals')
 
     # Heatmap of feature correlations
     corr = data[['lat', 'lon', 'elevation', 'temperature', 'humidity', 'pressure', 'rainfall']].corr()
-    sns.heatmap(corr, annot=True, cmap='coolwarm', ax=ax3)
-    ax3.set_title('Feature Correlation Heatmap')
+    fig_heatmap = px.imshow(corr, text_auto=True, aspect="auto")
+    fig_heatmap.update_layout(title='Feature Correlation Heatmap')
 
-    return fig
+    return fig_scatter, fig_hist, fig_heatmap
 
 # Streamlit app
 def main():
     st.set_page_config(page_title="Rainfall Estimation Dashboard", layout="wide")
-
+    
     st.title("Rainfall Estimation Dashboard")
-
-    # File uploader
+    
     uploaded_file = st.file_uploader("Choose a CSV or Excel file", type=['csv', 'xlsx'])
-
+    
     if uploaded_file is not None:
         try:
             if uploaded_file.name.endswith('.csv'):
                 data = pd.read_csv(uploaded_file)
             elif uploaded_file.name.endswith('.xlsx'):
                 data = pd.read_excel(uploaded_file)
-
+            
             st.success("File uploaded successfully!")
-
-            # Display raw data
+            
             st.subheader("Raw Data")
             st.write(data.head())
-
-            # Prepare data
+            
             X, y, scaler = load_and_prepare_data(data)
-
-            # Split data
+            
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
             X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size=0.2, random_state=42)
-
-            # Train models
+            
             with st.spinner("Training models... This may take a few minutes."):
                 ann_model, history = train_ann_model(X_train, y_train, X_val, y_val)
                 xgb_model = train_xgboost_model(X_train, y_train)
                 rf_model = train_random_forest_model(X_train, y_train)
-
-            # Make predictions
+            
             y_pred_ann = ann_model.predict(X_test).flatten()
             y_pred_xgb = xgb_model.predict(X_test)
             y_pred_rf = rf_model.predict(X_test)
             y_pred_ensemble = (y_pred_ann + y_pred_xgb + y_pred_rf) / 3
-
-            # Train residual model
+            
             residuals = y_test - y_pred_ensemble
             residual_model = train_xgboost_model(X_test, residuals)
             y_pred_final = y_pred_ensemble + residual_model.predict(X_test)
-
-            # Display results
+            
             st.subheader("Model Evaluation")
             col1, col2 = st.columns(2)
             with col1:
@@ -154,13 +138,13 @@ def main():
                 st.write(evaluate_model(y_test, y_pred_rf, "Random Forest"))
                 st.write(evaluate_model(y_test, y_pred_ensemble, "Ensemble"))
             st.write(evaluate_model(y_test, y_pred_final, "Final Model (with residual correction)"))
-
-            # Visualizations
+            
             st.subheader("Visualizations")
-            fig = create_visualizations(data, y_test, y_pred_final)
-            st.pyplot(fig)
-
-            # Prediction for missing data
+            fig_scatter, fig_hist, fig_heatmap = create_visualizations(data, y_test, y_pred_final)
+            st.plotly_chart(fig_scatter)
+            st.plotly_chart(fig_hist)
+            st.plotly_chart(fig_heatmap)
+            
             st.subheader("Predict Missing Rainfall")
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -172,7 +156,7 @@ def main():
             with col3:
                 humidity = st.number_input("Humidity", value=80)
                 pressure = st.number_input("Pressure", value=1010)
-
+            
             if st.button("Predict"):
                 missing_data = np.array([[lat, lon, elevation, temperature, humidity, pressure]])
                 missing_data_scaled = scaler.transform(missing_data)
@@ -183,10 +167,10 @@ def main():
                 residual_pred = residual_model.predict(missing_data_scaled)
                 final_pred = ensemble_pred + residual_pred
                 st.success(f"Predicted rainfall: {final_pred[0]:.2f} mm")
-
+        
         except Exception as e:
             st.error(f"An error occurred: {str(e)}")
-
+    
     else:
         st.info("Please upload a CSV or Excel file to begin.")
 
