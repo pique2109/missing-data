@@ -17,7 +17,69 @@ import base64
 import openpyxl
 from lxml import etree
 
-# ... (fungsi-fungsi sebelumnya tetap sama) ...
+@st.cache_data
+def load_and_prepare_data(data):
+    features = ['lat', 'lon', 'elevation', 'temperature', 'humidity', 'pressure']
+    X = data[features]
+    y = data['rainfall']
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    return X_scaled, y, scaler
+
+@st.cache_resource
+def create_and_train_ann_model(X_train, y_train, X_val, y_val):
+    model = Sequential([
+        Dense(64, activation='relu', input_shape=(X_train.shape[1],)),
+        Dropout(0.2),
+        Dense(32, activation='relu'),
+        Dropout(0.2),
+        Dense(16, activation='relu'),
+        Dense(1)
+    ])
+    model.compile(optimizer=Adam(learning_rate=0.001), loss='mean_squared_error')
+    early_stopping = EarlyStopping(patience=10, restore_best_weights=True)
+    history = model.fit(X_train, y_train, validation_data=(X_val, y_val),
+                        epochs=100, batch_size=32, callbacks=[early_stopping], verbose=0)
+    return model, history
+
+@st.cache_resource
+def train_xgboost_model(X_train, y_train):
+    model = XGBRegressor(n_estimators=100, learning_rate=0.1, max_depth=5)
+    model.fit(X_train, y_train)
+    return model
+
+@st.cache_resource
+def train_random_forest_model(X_train, y_train):
+    model = RandomForestRegressor(n_estimators=100, max_depth=10)
+    model.fit(X_train, y_train)
+    return model
+
+def evaluate_model(y_true, y_pred, model_name):
+    mse = mean_squared_error(y_true, y_pred)
+    mae = mean_absolute_error(y_true, y_pred)
+    r2 = r2_score(y_true, y_pred)
+    return f"{model_name} - MSE: {mse:.4f}, MAE: {mae:.4f}, R2: {r2:.4f}"
+
+def create_visualizations(data, y_true, y_pred):
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(20, 5))
+    
+    ax1.scatter(y_true, y_pred)
+    ax1.plot([y_true.min(), y_true.max()], [y_true.min(), y_true.max()], 'r--', lw=2)
+    ax1.set_xlabel('Actual Rainfall')
+    ax1.set_ylabel('Predicted Rainfall')
+    ax1.set_title('Actual vs Predicted Rainfall')
+    
+    residuals = y_true - y_pred
+    ax2.hist(residuals, bins=30)
+    ax2.set_xlabel('Residuals')
+    ax2.set_ylabel('Frequency')
+    ax2.set_title('Histogram of Residuals')
+    
+    corr = data[['lat', 'lon', 'elevation', 'temperature', 'humidity', 'pressure', 'rainfall']].corr()
+    sns.heatmap(corr, annot=True, cmap='coolwarm', ax=ax3)
+    ax3.set_title('Feature Correlation Heatmap')
+    
+    return fig
 
 def create_template_data():
     """Membuat data template."""
