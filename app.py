@@ -1,20 +1,6 @@
 import streamlit as st
-import subprocess
-import sys
-
-# Install required packages
-def install(package):
-    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-
-packages_to_install = ['pandas', 'numpy', 'scikit-learn', 'tensorflow', 'matplotlib', 'seaborn', 'xlsxwriter', 'openpyxl', 'keras-tuner']
-
-for package in packages_to_install:
-    install(package)
-    
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
@@ -82,26 +68,6 @@ def evaluate_model(y_true, y_pred, model_name):
     r2 = r2_score(y_true, y_pred)
     return f"{model_name} - MSE: {mse:.4f}, MAE: {mae:.4f}, R2: {r2:.4f}"
 
-# Fungsi untuk membuat visualisasi
-def create_visualizations(data, y_true, y_pred):
-    # Scatter plot: Actual vs Predicted
-    fig_scatter = px.scatter(x=y_true, y=y_pred, labels={'x': 'Actual Rainfall', 'y': 'Predicted Rainfall'})
-    fig_scatter.add_trace(go.Scatter(x=[y_true.min(), y_true.max()], y=[y_true.min(), y_true.max()],
-                                     mode='lines', name='Perfect Prediction', line=dict(color='red', dash='dash')))
-    fig_scatter.update_layout(title='Actual vs Predicted Rainfall')
-
-    # Histogram of residuals
-    residuals = y_true - y_pred
-    fig_hist = px.histogram(residuals, nbins=30, labels={'value': 'Residuals'})
-    fig_hist.update_layout(title='Histogram of Residuals')
-
-    # Heatmap of feature correlations
-    corr = data[['lat', 'lon', 'elevation', 'temperature', 'humidity', 'pressure', 'rainfall']].corr()
-    fig_heatmap = px.imshow(corr, text_auto=True, aspect="auto")
-    fig_heatmap.update_layout(title='Feature Correlation Heatmap')
-
-    return fig_scatter, fig_hist, fig_heatmap
-
 # Streamlit app
 def main():
     st.set_page_config(page_title="Rainfall Estimation Dashboard", layout="wide")
@@ -152,10 +118,19 @@ def main():
             st.write(evaluate_model(y_test, y_pred_final, "Final Model (with residual correction)"))
             
             st.subheader("Visualizations")
-            fig_scatter, fig_hist, fig_heatmap = create_visualizations(data, y_test, y_pred_final)
-            st.plotly_chart(fig_scatter)
-            st.plotly_chart(fig_hist)
-            st.plotly_chart(fig_heatmap)
+            
+            # Scatter plot: Actual vs Predicted
+            st.write("Actual vs Predicted Rainfall")
+            st.scatter_chart(pd.DataFrame({'Actual': y_test, 'Predicted': y_pred_final}))
+            
+            # Histogram of residuals
+            st.write("Histogram of Residuals")
+            st.histogram_chart(pd.DataFrame({'Residuals': y_test - y_pred_final}))
+            
+            # Correlation heatmap
+            st.write("Feature Correlation Heatmap")
+            corr = data[['lat', 'lon', 'elevation', 'temperature', 'humidity', 'pressure', 'rainfall']].corr()
+            st.heatmap(corr)
             
             st.subheader("Predict Missing Rainfall")
             col1, col2, col3 = st.columns(3)
