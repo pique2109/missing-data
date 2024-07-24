@@ -17,11 +17,34 @@ import base64
 import openpyxl
 from lxml import etree
 
+# Konstanta untuk nilai khusus pengganti NaN
+SPECIAL_VALUE = 9999
+
+def replace_nan_with_special_value(df, special_value=SPECIAL_VALUE):
+    """Mengganti nilai NaN dengan nilai khusus dan mengidentifikasi data kosong."""
+    df_replaced = df.copy()
+    nan_mask = df.isna()
+    df_replaced = df_replaced.fillna(special_value)
+    
+    # Menambahkan kolom baru untuk mengidentifikasi data kosong
+    for col in df.columns:
+        df_replaced[f"{col}_is_missing"] = nan_mask[col].astype(int)
+    
+    return df_replaced
+
 @st.cache_data
 def load_and_prepare_data(data):
+    # Ganti NaN dengan nilai khusus
+    data_replaced = replace_nan_with_special_value(data)
+    
     features = ['lat', 'lon', 'elevation', 'temperature', 'humidity', 'pressure']
-    X = data[features]
-    y = data['rainfall']
+    # Tambahkan kolom indikator data kosong ke features
+    missing_indicators = [f"{col}_is_missing" for col in features]
+    features += missing_indicators
+    
+    X = data_replaced[features]
+    y = data_replaced['rainfall']
+    
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     return X_scaled, y, scaler
@@ -125,6 +148,13 @@ def get_xml_download_link(df, filename="template_data.xml"):
     href = f'<a href="data:application/xml;base64,{b64}" download="{filename}">Download XML Template</a>'
     return href
 
+def predict_rainfall(model, scaler, lat, lon, elevation, temperature, humidity, pressure):
+    features = np.array([[lat, lon, elevation, temperature, humidity, pressure]])
+    # Tambahkan indikator data kosong (semua 0 karena ini adalah input manual)
+    features = np.hstack([features, np.zeros((1, 6))])
+    features_scaled = scaler.transform(features)
+    return model.predict(features_scaled)[0]
+
 def main():
     st.set_page_config(page_title="Rainfall Estimation Dashboard", layout="wide")
     
@@ -162,12 +192,17 @@ def main():
                 data = pd.DataFrame(data)
                 data['date'] = pd.to_datetime(data['date'])
                 for col in ['lat', 'lon', 'elevation', 'temperature', 'humidity', 'pressure', 'rainfall']:
-                    data[col] = pd.to_numeric(data[col])
+                    data[col] = pd.to_numeric(data[col], errors='coerce')  # 'coerce' akan mengubah nilai non-numerik menjadi NaN
             
             st.success("File uploaded successfully!")
             
             st.subheader("Raw Data")
             st.write(data.head())
+            
+            # Tampilkan informasi tentang data kosong
+            st.subheader("Missing Data Information")
+            missing_data = data.isnull().sum()
+            st.write(missing_data)
             
             X, y, scaler = load_and_prepare_data(data)
             
@@ -215,18 +250,13 @@ def main():
                 pressure = st.number_input("Pressure", value=1010)
             
             if st.button("Predict"):
-                missing_data = np.array([[lat, lon, elevation, temperature, humidity, pressure]])
-                missing_data_scaled = scaler.transform(missing_data)
-                ann_pred = ann_model.predict(missing_data_scaled).flatten()
-                xgb_pred = xgb_model.predict(missing_data_scaled)
-                rf_pred = rf_model.predict(missing_data_scaled)
-                ensemble_pred = (ann_pred + xgb_pred + rf_pred) / 3
-                residual_pred = residual_model.predict(missing_data_scaled)
-                final_pred = ensemble_pred + residual_pred
-                st.success(f"Predicted rainfall: {final_pred[0]:.2f} mm")
+                final_pred = predict_rainfall(ann_model, scaler, lat, lon, elevation, temperature, humidity, pressure)
+                st.success(f"Predicted rainfall: {final_pred:.2f} mm")
         
         except Exception as e:
             st.error(f"An error occurred: {str(e)}")
+            if "Label contains NaN" in str(e):
+                st.warning("The uploaded data contains NaN or infinity values in the rainfall column. Please check your data and ensure all rainfall values are valid numbers.")
     
     else:
         st.info("Please upload a CSV, Excel, or XML file to begin.")
